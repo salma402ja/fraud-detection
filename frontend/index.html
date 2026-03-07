@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fraud Detection – MLOps TP</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.08);
+      padding: 36px;
+      width: 100%;
+      max-width: 520px;
+    }
+
+    h1 { font-size: 1.4rem; color: #1e293b; margin-bottom: 4px; }
+    .subtitle { font-size: .85rem; color: #64748b; margin-bottom: 28px; }
+
+    .form-group { margin-bottom: 18px; }
+    label { display: block; font-size: .8rem; font-weight: 600; color: #475569; margin-bottom: 6px; }
+    input[type="number"] {
+      width: 100%; padding: 10px 12px;
+      border: 1.5px solid #e2e8f0; border-radius: 8px;
+      font-size: .95rem; color: #1e293b;
+      transition: border-color .2s;
+    }
+    input[type="number"]:focus { outline: none; border-color: #3b82f6; }
+
+    .hint { font-size: .75rem; color: #94a3b8; margin-top: 3px; }
+
+    button {
+      width: 100%; padding: 12px;
+      background: #2563eb; color: white;
+      border: none; border-radius: 8px;
+      font-size: 1rem; font-weight: 600;
+      cursor: pointer; transition: background .2s;
+    }
+    button:hover  { background: #1d4ed8; }
+    button:active { background: #1e40af; }
+
+    #result {
+      display: none;
+      margin-top: 22px;
+      padding: 18px;
+      border-radius: 8px;
+      font-size: .95rem;
+      line-height: 1.6;
+    }
+    #result.fraud { background: #fef2f2; border-left: 4px solid #dc2626; color: #991b1b; }
+    #result.legit { background: #f0fdf4; border-left: 4px solid #16a34a; color: #15803d; }
+    #result.error { background: #fffbeb; border-left: 4px solid #d97706; color: #92400e; }
+
+    #result strong { display: block; font-size: 1.05rem; margin-bottom: 6px; }
+
+    .status-bar {
+      display: flex; align-items: center; gap: 8px;
+      font-size: .78rem; color: #94a3b8;
+      margin-top: 20px; padding-top: 16px;
+      border-top: 1px solid #f1f5f9;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }
+    .dot.green { background: #22c55e; }
+    .dot.red   { background: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔍 Fraud Detection</h1>
+    <p class="subtitle">Real-time transaction scoring – MLOps TP · Séance 4</p>
+
+    <form id="txForm">
+      <div class="form-group">
+        <label>Amount (€)</label>
+        <input type="number" id="amount" value="150" min="0.01" step="0.01" required />
+        <p class="hint">Transaction value in euros</p>
+      </div>
+
+      <div class="form-group">
+        <label>Hour of transaction</label>
+        <input type="number" id="hour" value="14" min="0" max="23" required />
+        <p class="hint">0 = midnight, 23 = 11 PM</p>
+      </div>
+
+      <div class="form-group">
+        <label>Merchant category (0 – 9)</label>
+        <input type="number" id="merchant_category" value="2" min="0" max="9" required />
+        <p class="hint">0-4 = common categories, 5-9 = high-risk categories</p>
+      </div>
+
+      <div class="form-group">
+        <label>Distance from home (km)</label>
+        <input type="number" id="distance_from_home" value="5" min="0" step="0.1" required />
+        <p class="hint">How far the transaction is from the cardholder's home</p>
+      </div>
+
+      <div class="form-group">
+        <label>Transactions in last 24 h</label>
+        <input type="number" id="num_transactions_last_24h" value="3" min="0" required />
+        <p class="hint">Number of transactions on this card today</p>
+      </div>
+
+      <button type="submit">Analyze Transaction</button>
+    </form>
+
+    <div id="result"></div>
+
+    <div class="status-bar">
+      <div class="dot" id="apiDot"></div>
+      <span id="apiStatus">Connecting to API…</span>
+    </div>
+  </div>
+
+  <!-- ⚠️ Students: edit config.js to set your Render API URL -->
+  <script src="config.js"></script>
+  <script>
+    const API_URL = (typeof CONFIG !== "undefined" && CONFIG.API_URL)
+      ? CONFIG.API_URL
+      : "http://localhost:8000";
+
+    // ── Check API health on load ──────────────────────────────────────────
+    async function checkHealth() {
+      try {
+        const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(4000) });
+        const data = await res.json();
+        const dot = document.getElementById("apiDot");
+        const status = document.getElementById("apiStatus");
+        if (data.status === "ok") {
+          dot.classList.add("green");
+          status.textContent = `API online · model ${data.model_loaded ? "loaded" : "not loaded"} · ${data.model_version}`;
+        } else {
+          dot.classList.add("red");
+          status.textContent = "API returned unexpected status";
+        }
+      } catch {
+        document.getElementById("apiDot").classList.add("red");
+        document.getElementById("apiStatus").textContent = `Cannot reach ${API_URL}`;
+      }
+    }
+    checkHealth();
+
+    // ── Submit form ───────────────────────────────────────────────────────
+    document.getElementById("txForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const payload = {
+        amount:                    parseFloat(document.getElementById("amount").value),
+        hour:                      parseInt(document.getElementById("hour").value),
+        merchant_category:         parseInt(document.getElementById("merchant_category").value),
+        distance_from_home:        parseFloat(document.getElementById("distance_from_home").value),
+        num_transactions_last_24h: parseInt(document.getElementById("num_transactions_last_24h").value),
+      };
+
+      const resultDiv = document.getElementById("result");
+      resultDiv.style.display = "block";
+      resultDiv.className = "";
+      resultDiv.innerHTML = "<em>Analyzing…</em>";
+
+      try {
+        const res = await fetch(`${API_URL}/predict`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const pct = (data.fraud_probability * 100).toFixed(1);
+
+        resultDiv.className = data.is_fraud ? "fraud" : "legit";
+        resultDiv.innerHTML = `
+          <strong>${data.is_fraud ? "⚠️  FRAUD DETECTED" : "✅  LEGITIMATE TRANSACTION"}</strong>
+          Fraud probability: <strong>${pct}%</strong><br>
+          Model version: ${data.model_version}
+        `;
+      } catch (err) {
+        resultDiv.className = "error";
+        resultDiv.innerHTML = `<strong>⚠️  Error</strong>${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Airflow – local development stack
+#
+# HOW IT CONNECTS TO YOUR PROJECT
+# ────────────────────────────────
+# Airflow runs inside Docker containers and has no direct access to your files.
+# The connection is made through Docker volume mounts: each mount maps a folder
+# on your machine (left side) to a path inside the container (right side).
+#
+# All paths on the left are resolved relative to THIS file's location (airflow/).
+#
+#   ./dags            →  /opt/airflow/dags/
+#     The DAG file (fraud_retrain_dag.py) is read directly from your disk.
+#     Any change you save is picked up by Airflow without restarting.
+#
+#   ../data           →  /opt/airflow/data/
+#     The DAG writes transactions.csv here after extract_transactions runs.
+#     This folder is created automatically on the first DAG run.
+#
+#   ../backend/model  →  /opt/airflow/model/
+#     The DAG reads baseline_stats.json (drift detection) and writes
+#     fraud_model.pkl (after retraining). This is the same folder used
+#     by the FastAPI backend, so a retrained model is immediately available
+#     to the API without any copy step.
+#
+# ENVIRONMENT VARIABLES
+# ─────────────────────
+# DATA_PATH, MODEL_PATH, BASELINE_PATH tell the DAG where to find its files
+# inside the container. They match the right-hand side of the volume mounts above.
+#
+# ARCHITECTURE
+# ────────────
+# Three services run together:
+#   postgres        – Airflow metadata database (task state, logs index, XCom)
+#   airflow-init    – one-shot: creates the DB schema + admin user, then exits
+#   airflow-webserver – the UI at http://localhost:8080
+#   airflow-scheduler – parses DAGs and triggers task runs
+#
+# Run:  docker-compose -f airflow/docker-compose.airflow.yml up
+# UI:   http://localhost:8080  (admin / admin)
+# Stop: docker-compose -f airflow/docker-compose.airflow.yml down -v
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.8"
+
+# Shared configuration applied to every Airflow service (YAML anchor)
+x-airflow-common: &airflow-common
+  # Build from the local Dockerfile instead of using the base image directly.
+  # This bakes the ML dependencies in as a cached layer — installed once at
+  # build time, never reinstalled on subsequent docker-compose up calls.
+  build: .
+  image: airflow-fraud:2.8.1
+  environment:
+    # Use LocalExecutor: tasks run as subprocesses in the scheduler container.
+    # No need for Celery workers for a single-machine setup.
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # Airflow stores DAG run state, task instances, and XCom values in Postgres.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+
+    # Disable the built-in example DAGs to keep the UI clean.
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # Fernet key encrypts sensitive values stored in the DB (connections, variables).
+    AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLt0nznW0o="
+
+    # These variables are read by fraud_retrain_dag.py via os.getenv().
+    # They point to the container-side paths of the volume mounts below.
+    DATA_PATH:     /opt/airflow/data/transactions.csv
+    MODEL_PATH:    /opt/airflow/model/fraud_model.pkl
+    BASELINE_PATH: /opt/airflow/model/baseline_stats.json
+
+  volumes:
+    # DAG source: your local airflow/dags/ folder → Airflow reads it live
+    - ./dags:/opt/airflow/dags
+
+    # Airflow task logs (kept in a named volume, not on your disk)
+    - airflow_logs:/opt/airflow/logs
+
+    # Data folder: created at first DAG run, shared between Airflow and host
+    - ../data:/opt/airflow/data
+
+    # Model folder: shared with the FastAPI backend (same physical directory)
+    - ../backend/model:/opt/airflow/model
+
+  depends_on:
+    postgres:
+      condition: service_healthy   # wait for Postgres to be ready before starting
+
+services:
+  # ── Metadata database ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER:     airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB:       airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+
+  # ── One-shot initialisation (runs once, then exits with code 0) ─────────────
+  airflow-init:
+    <<: *airflow-common
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username admin --password admin
+          --firstname Admin --lastname Admin --role Admin --email admin@example.com
+      "
+    # restart: no → this container must not be restarted after it exits
+    restart: "no"
+
+  # ── Web UI ──────────────────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"   # http://localhost:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── Scheduler ───────────────────────────────────────────────────────────────
+  # Parses DAG files, checks schedules, and submits tasks for execution.
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+
+volumes:
+  postgres_data:   # persists Airflow state between docker-compose down/up
+  airflow_logs:    # task execution logs

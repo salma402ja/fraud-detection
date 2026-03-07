@@ -1,0 +1,30 @@
+# GitHub Actions – CI/CD Pipeline
+# Fraud Detection API
+#
+# This workflow must:
+#   1. Run the tests on every push to 'prod'
+#   2. If tests pass, trigger a redeploy on Render
+
+name: CI/CD - Fraud Detection
+
+on:
+  push:
+    branches:
+      - prod
+  pull_request:
+    branches:
+      - prod
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # TODO: write the steps to install dependencies, train the model, and run the tests
+
+  deploy-backend:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/prod'
+    steps:
+      # TODO: write the step that triggers the Render deploy hook
+      #       the URL must be stored as a GitHub secret, not hardcoded here
