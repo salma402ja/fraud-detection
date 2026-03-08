@@ -3,5 +3,5 @@
  * ⚠️  STUDENTS: replace the URL below with your own Render service URL.
  */
 const CONFIG = {
-    API_URL: "https://YOUR-APP-NAME.onrender.com",   // ← change this
+    API_URL: "https://fraud-api.onrender.com",   // ← change this
 };
